@@ -24,6 +24,9 @@ var proxyHostPort string
 func main() {
 	flag.StringVar(&nodeHostPort, "node", "127.0.0.1:7731", "Cardano node host port")
 	flag.StringVar(&proxyHostPort, "proxy", "127.0.0.1:7732", "Cardano proxy host port")
+	flag.Parse()
+
+	fmt.Printf("target node: %s\n", nodeHostPort)
 
 	dir = filepath.Join(".", fmt.Sprintf("proxy-%s", time.Now().Format("20060102-150405")))
 	err := os.MkdirAll(dir, os.ModePerm)
@@ -106,6 +109,9 @@ func handleClientConnection(client net.Conn) {
 		n, err3 := client.Read(buf)
 		if err3 != nil {
 			if strings.Contains(err3.Error(), "use of closed network connection") {
+				return
+			}
+			if strings.Contains(err3.Error(), "EOF") {
 				return
 			}
 			log.Fatalf("%+v", errors.WithStack(err3))
