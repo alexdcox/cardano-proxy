@@ -16,17 +16,15 @@ import (
 	"github.com/pkg/errors"
 )
 
-var dir string
 var nodeHostPort string
 var proxyHostPort string
+var proxyOutputMode string
 
 func main() {
-	flag.StringVar(&nodeHostPort, "node", "127.0.0.1:7731", "Cardano node host port")
-	flag.StringVar(&proxyHostPort, "proxy", "127.0.0.1:7732", "Cardano proxy host port")
+	flag.StringVar(&nodeHostPort, "node", "127.0.0.1:3031", "Cardano node host port")
+	flag.StringVar(&proxyHostPort, "proxy", "127.0.0.1:3033", "Cardano proxy host port")
+	flag.StringVar(&proxyOutputMode, "output", "write", "Cardano proxy output mode (dump|write)")
 	flag.Parse()
-
-	dir = filepath.Join(".", fmt.Sprintf("proxy-%s", time.Now().Format("20060102-150405")))
-	err := os.MkdirAll(dir, os.ModePerm)
 
 	listen, err := net.Listen("tcp", proxyHostPort)
 	if err != nil {
@@ -35,7 +33,7 @@ func main() {
 
 	fmt.Printf("target node: %s\n", nodeHostPort)
 	fmt.Printf("proxy:       %s\n", proxyHostPort)
-	fmt.Printf("output dir:  %s\n", dir)
+	fmt.Printf("output mode: %s\n", proxyOutputMode)
 
 	for {
 		conn, err2 := listen.Accept()
@@ -50,6 +48,12 @@ func main() {
 func handleClientConnection(client net.Conn) {
 	fmt.Printf("new connection from %v\n", client.RemoteAddr())
 	defer client.Close()
+
+	dir := filepath.Join("./data/", fmt.Sprintf("proxy-%s", time.Now().Format("20060102-150405")))
+	fmt.Printf("output dir:  %s\n\n", dir)
+	err := os.MkdirAll(dir, os.ModePerm)
+
+	requestIndex := new(atomic.Uint64)
 
 	node, err := net.Dial("tcp", nodeHostPort)
 	if err != nil {
@@ -75,8 +79,8 @@ func handleClientConnection(client net.Conn) {
 				log.Fatalf("%+v", errors.WithStack(err2))
 			}
 
-			fmt.Printf("node sent %d bytes\n", n)
-			writeHex(">", readBuf[:n])
+			// fmt.Printf("node sent %d bytes\n", n)
+			output(requestIndex, dir, ">", readBuf[:n])
 
 			if n == 0 {
 				log.Fatalf("not expecting 0 bytes read")
@@ -90,7 +94,8 @@ func handleClientConnection(client net.Conn) {
 
 			_, err = client.Write(fullBuf.Bytes())
 			if err != nil {
-				log.Fatalf("%+v", errors.WithStack(err))
+				log.Printf("%+v", errors.WithStack(err))
+				return
 			}
 
 			fullBuf = new(bytes.Buffer)
@@ -107,29 +112,46 @@ func handleClientConnection(client net.Conn) {
 			if strings.Contains(err3.Error(), "EOF") {
 				return
 			}
-			log.Fatalf("%+v", errors.WithStack(err3))
+			log.Printf("%+v", errors.WithStack(err3))
+			return
 		}
 
-		writeHex("<", buf[:n])
+		output(requestIndex, dir, "<", buf[:n])
 		_, err = node.Write(buf[:n])
 		if err != nil {
-			log.Fatalf("%+v", errors.WithStack(err))
+			log.Printf("%+v", errors.WithStack(err))
+			return
 		}
 	}
 }
 
-var requestIndex = new(atomic.Uint64)
+func output(requestIndex *atomic.Uint64, dir, direction string, buf []byte) {
+	index := requestIndex.Add(1)
+	if strings.Contains(proxyOutputMode, "write") {
+		writeHex(index, dir, direction, buf)
+	}
+	if strings.Contains(proxyOutputMode, "dump") {
+		dumpHex(index, direction, buf)
+	}
+}
 
-func writeHex(direction string, buf []byte) {
-	i := requestIndex.Add(1)
+func dumpHex(i uint64, direction string, buf []byte) {
+	d := "OUT"
+	if direction == ">" {
+		d = "IN"
+	}
+	fmt.Printf("%08d | %s | %d bytes\n%x\n\n", i, d, len(buf), buf)
+}
+
+func writeHex(i uint64, dir, direction string, buf []byte) {
 	d := "o"
 	if direction == ">" {
 		d = "i"
 	}
-	filename := fmt.Sprintf("%04d-%s-%d.dat", i, d, len(buf))
+	filename := fmt.Sprintf("%08d-%s-%d.dat", i, d, len(buf))
 	fpath := path.Join(dir, filename)
 	err := os.WriteFile(fpath, []byte(fmt.Sprintf("%x", buf)), os.ModePerm)
-	fmt.Printf("wrote: %s\n", filename)
+	// fmt.Printf("wrote: %s\n", filename)
 	if err != nil {
 		log.Fatalf("%+v", errors.WithStack(err))
 	}
